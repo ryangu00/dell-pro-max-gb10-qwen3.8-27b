@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# deploy.sh — Qwen3.8-27B (Unsloth NVFP4) 单机一键部署 on Dell Pro Max with GB10
-# 用法: ./deploy.sh [--port 8000] [--models-dir ~/models]
-# 做四件事:预检 → 拉取(镜像+权重,全 pin) → 启动 → 验活。幂等:已在跑则直接验活。
+# deploy.sh — Qwen3.8-27B (Unsloth NVFP4) single-machine one-command deploy on Dell Pro Max with GB10
+# Usage: ./deploy.sh [--port 8000] [--models-dir ~/models]
+# Does four things: preflight -> pull (image + weights, fully pinned) -> start -> liveness check. Idempotent: if already running, skips straight to the liveness check.
 set -euo pipefail
 
 PORT=8000; MODELS_DIR="$HOME/models"
@@ -12,42 +12,42 @@ while [ $# -gt 0 ]; do case "$1" in
 esac; done
 
 IMAGE="vllm/vllm-openai:v0.27.1-aarch64-ubuntu2404"
-HF_REPO="unsloth/Qwen3.8-27B-NVFP4"          # Unsloth Dynamic V3.0 公开量化版
+HF_REPO="unsloth/Qwen3.8-27B-NVFP4"          # Unsloth Dynamic V3.0 public quantized release
 MODEL_DIR="$MODELS_DIR/Qwen3.8-27B-NVFP4"
 NAME="qwen38-27b"
 
 say() { printf '\033[1m[deploy]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[deploy] FAIL:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# ── 1. 预检(把本书避坑清单变成机器检查) ──
-[ "$(uname -m)" = "aarch64" ] || die "本配方面向 aarch64(Dell Pro Max with GB10);当前 $(uname -m)。x86 请换官方默认镜像线。"
-command -v docker >/dev/null || die "需要 docker"
+# ── 1. Preflight (this book's Pitfalls turned into machine checks) ──
+[ "$(uname -m)" = "aarch64" ] || die "This recipe targets aarch64 (Dell Pro Max with GB10); current arch is $(uname -m). On x86 use the official default image line."
+command -v docker >/dev/null || die "docker is required"
 if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
-  say "容器 $NAME 已在跑,跳到验活(幂等)"; SKIP_START=1
+  say "Container $NAME already running, skipping to liveness check (idempotent)"; SKIP_START=1
 elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
-  die "存在已停止的 $NAME 容器。docker start $NAME 复用,或 docker rm $NAME 后重跑。"
+  die "A stopped $NAME container exists. Reuse it with: docker start $NAME, or docker rm $NAME and rerun."
 else
   SKIP_START=0
-  lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && die "端口 $PORT 被占(坑:端口冲突像'服务没起来')。lsof -iTCP:$PORT 看是谁。"
+  lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 && die "Port $PORT is taken (pitfall: a port conflict looks like 'the service never came up'). Run lsof -iTCP:$PORT to see who has it."
   avail_gb=$(free -g | awk '/^Mem:/{print $7}')
-  [ "${avail_gb:-0}" -ge 30 ] || die "可用内存 ${avail_gb}GB < 30GB。NVFP4 权重 ~20GB+KV 需余量;先清场(坑:统一内存吃满=整机 thrash)。"
-  df -BG "$MODELS_DIR" 2>/dev/null | awk 'NR==2{gsub("G","",$4); if($4<30) exit 1}' || die "磁盘余量 <30GB($MODELS_DIR)"
+  [ "${avail_gb:-0}" -ge 30 ] || die "Available memory ${avail_gb}GB < 30GB. NVFP4 weights are ~20GB plus KV headroom; free memory first (pitfall: filling unified memory = whole-machine thrash)."
+  df -BG "$MODELS_DIR" 2>/dev/null | awk 'NR==2{gsub("G","",$4); if($4<30) exit 1}' || die "Disk free space <30GB ($MODELS_DIR)"
 fi
 
-# ── 2. 拉取(全 pin) ──
+# ── 2. Pull (fully pinned) ──
 if [ "$SKIP_START" = 0 ]; then
-  say "拉镜像 $IMAGE(注意:必须 aarch64 后缀线,坑 #1)"
+  say "Pulling image $IMAGE (note: must be the aarch64-suffixed line, pitfall #1)"
   docker pull "$IMAGE"
   if [ ! -f "$MODEL_DIR/config.json" ]; then
-    say "下载权重 $HF_REPO → $MODEL_DIR(~20GB,耐心)"
-    command -v hf >/dev/null || die "缺 hf CLI。安装(建议独立环境): pip install -U huggingface_hub"
+    say "Downloading weights $HF_REPO -> $MODEL_DIR (~20GB, be patient)"
+    command -v hf >/dev/null || die "Missing hf CLI. Install (ideally in an isolated environment): pip install -U huggingface_hub"
     hf download "$HF_REPO" --local-dir "$MODEL_DIR"
   else
-    say "权重已在 $MODEL_DIR,跳过下载"
+    say "Weights already at $MODEL_DIR, skipping download"
   fi
 
-  # ── 3. 启动(生产同款参数;--memory 硬 cap=坑 #2 的保险) ──
-  say "启动 $NAME @ :$PORT"
+  # ── 3. Start (same params as production; --memory hard cap = insurance for pitfall #2) ──
+  say "Starting $NAME @ :$PORT"
   docker run -d --name "$NAME" --gpus all --memory 90g \
     -p "$PORT:$PORT" -v "$MODEL_DIR:/models/Qwen3.8-27B-NVFP4" \
     "$IMAGE" \
@@ -58,19 +58,19 @@ if [ "$SKIP_START" = 0 ]; then
     --reasoning-parser qwen3 --tool-call-parser qwen3_coder --enable-auto-tool-choice
 fi
 
-# ── 4. 验活(200 不算数,真实推理+关思考断言才算) ──
-say "等服务就绪(冷启动+编译可达数分钟)..."
+# ── 4. Liveness check (a 200 doesn't count; only real inference + a thinking-off assertion counts) ──
+say "Waiting for the service to become ready (cold start + compilation can take minutes)..."
 for i in $(seq 1 120); do
   curl -s -m 3 "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1 && break
   sleep 10
-  [ "$i" = 120 ] && die "20 分钟未就绪,看日志: docker logs $NAME"
+  [ "$i" = 120 ] && die "Not ready after 20 minutes, check logs: docker logs $NAME"
 done
-say "真实推理断言(含关思考验证,坑 #3)..."
+say "Real inference assertion (includes thinking-off verification, pitfall #3)..."
 RESP=$(curl -s -m 60 "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' -d '{
   "model":"qwen38-27b","max_tokens":50,
   "chat_template_kwargs":{"enable_thinking":false},
-  "messages":[{"role":"user","content":"回复一个词:DEPLOY_OK"}]}')
-echo "$RESP" | grep -q "DEPLOY_OK" || die "推理断言失败,响应: $(echo "$RESP" | head -c 300)"
+  "messages":[{"role":"user","content":"Reply with one word: DEPLOY_OK"}]}')
+echo "$RESP" | grep -q "DEPLOY_OK" || die "Inference assertion failed, response: $(echo "$RESP" | head -c 300)"
 RT=$(echo "$RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('usage',{}).get('completion_tokens_details',{}).get('reasoning_tokens',0))" 2>/dev/null || echo "?")
-say "✅ 部署完成: http://127.0.0.1:$PORT/v1 (关思考验证 reasoning_tokens=$RT,应≈0)"
-say "可选:三档 thinking proxy 见 scripts/thinking_proxy_3tier.py"
+say "✅ Deploy complete: http://127.0.0.1:$PORT/v1 (thinking-off check reasoning_tokens=$RT, should be ≈0)"
+say "Optional: 3-tier thinking proxy at scripts/thinking_proxy_3tier.py"
