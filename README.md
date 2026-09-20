@@ -65,3 +65,7 @@ docker pull vllm/vllm-openai:v0.27.1-aarch64-ubuntu2404
 
 ---
 *RyanAI Lab · All numbers measured on our resident environment. Updated 2026-09. Issues welcome.*
+
+## Update 2026-09-20: serving-tuning rounds and what replaced this setup
+
+Three serving-side tuning rounds on this exact configuration (fp8 KV cache with the `triton_attn` backend, a larger `--max-num-batched-tokens` budget, and deeper MTP at k=5 and k=7) were each measured and rolled back: cold prefill on a 28K-token prompt went from 35.6 s to 61.1 s (+72% time) with fp8 KV + triton_attn, k=5 traded +9.8% code decode for −9.7% Chinese prose, and k=7 cost −27% on Chinese prose and −11% KV pool. The numbers and the rollback reasoning are in `dell-pro-max-gb10-qwen3.8-27b-mtp-k-sweep` (github.com/ryangu00/). This single-node setup was our workhorse until 2026-09-01; production later moved to a two-node engine (see `dell-pro-max-gb10-vllm-stack-ab` and `dell-pro-max-gb10-qwen3.8-flash-next-1m-context`).
