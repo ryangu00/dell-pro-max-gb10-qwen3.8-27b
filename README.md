@@ -44,7 +44,7 @@ docker pull vllm/vllm-openai:v0.27.1-aarch64-ubuntu2404
 #    :8001=off / :8002=low / :8003=xhigh, pure stdlib, run directly with python3
 ```
 
-## Pitfalls (6, all first-hand incidents)
+## Pitfalls (7, all first-hand incidents)
 
 1. **First thing when switching vLLM versions: confirm the image tag is on the aarch64 line.** `vllm/vllm-openai:vX.Y.Z` defaults to x86; GB10 requires the `-aarch64-ubuntu2404` suffixed tag. Pull the wrong one and the symptoms are all over the map — it will burn half your day.
 2. **Never serve a large model in bare BF16**: we served a 67GB BF16 weight directly and unified-memory thrash froze the whole machine until we had to pull the power cord. Iron rule: quantize first (~20GB-class after NVFP4), add a `--memory` hard cap on the container, and keep `gpu_memory_utilization` ≤0.70 on GB10.
@@ -52,6 +52,7 @@ docker pull vllm/vllm-openai:v0.27.1-aarch64-ubuntu2404
 4. **Be careful with SGLang's model-specific tags**: we tried SGLang's Qwen-specific image line, hit three compatibility pitfalls in a row, and went back to vLLM. Not saying SGLang is bad — "model-specific tags" just can't keep maintenance pace with model iteration.
 5. **vLLM silently ignores LoRA on the vision tower** (observed on the v0.24 line; verify yourself on newer versions): attach a LoRA to the vision tower and vLLM neither errors nor applies it — silently swallowed; text LoRA works fine. To verify: same image, same question, one request with the LoRA and one without, then `diff` the outputs — identical output means it was swallowed.
 6. **Vision benchmarks across measurement setups are not directly comparable**: different stacks preprocess images differently (aspect-ratio-preserving vs square resize), so the same model's vision scores on two stacks are not comparable. Comparative tests must pin the preprocessing methodology.
+7. **Resize large images before sending them to a vision endpoint** (2026-08-23, single batch run, on the vLLM 0.27.1 line; the exact image tag on the measurement day was not re-recorded, not re-measured since): the original image took 60.1 s per image in wall time for a description/transcription batch job (prefill saturated); resizing the long edge to 1024 px before sending took 3.2 s per image in wall time for a description/transcription batch job, about 18x faster (60.1 / 3.2 = 18.8), with no visible loss in text transcription or chart reading. Original image resolution was not recorded; the number of images in the timed run, the prompt, and the output length were not recorded; quality was judged by eye, with no metric; whether a server-side maximum-pixel setting was active was not recorded. A vision adapter was hot-plugged into the same endpoint, but whether it was actually applied in this job was not recorded (see pitfall #5). The direction (large images are expensive, resizing helps) is the transferable part; the absolute seconds should not be assumed on newer stacks.
 
 ## Benchmark notes
 
